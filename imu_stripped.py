@@ -1,5 +1,4 @@
 import sys, getopt
-
 sys.path.append('.')
 import RTIMU
 import os.path
@@ -9,14 +8,7 @@ import operator
 import numpy as np
 import pyquaternion as pq
 
-IMU_IP = "127.0.0.2"
-IMU_PORT = 5005
-
-MON_IP = "127.0.0.5"
-MON_PORT = 5005
-
 SETTINGS_FILE = "RTIMULib"
-
 s = RTIMU.Settings(SETTINGS_FILE)
 imu = RTIMU.RTIMU(s)
 

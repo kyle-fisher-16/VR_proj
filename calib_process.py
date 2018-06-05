@@ -17,6 +17,15 @@ for i in range(100):
 	
 	if (img != None):
 		img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+
+		img = np.fliplr(np.flipud(img))
+		img = np.flipud(np.flipud(img))
+
+		#gray = cv2.cvtColor(data, cv2.COLOR_BGR2GRAY)
+		img = img.transpose([1, 0]);
+
+
 		img_shape = img.shape
 		ret, corners = cv2.findChessboardCorners(img, (4, 4), None)
 		imgpoints.append(corners)
