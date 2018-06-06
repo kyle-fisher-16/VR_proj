@@ -28,16 +28,16 @@ import numpy as np
 import pyquaternion as pq
 
 # plot
-import matplotlib.pyplot as plt
+
 
 # Globals
-PLOT_KEYPOINTS = True
-SHOW_IMAGE = False
+PLOT_KEYPOINTS = False
+SHOW_IMAGE = True
 SIGNAL_EXIT = False
 CAM_RES = (640, 368)
 SIFT_DOWNSAMP = 2.0;
 CAM_SLEEP = 0.25;
-MAIN_LOOP_SLEEP = 0.25;
+MAIN_LOOP_SLEEP = 2.0;
 
 accumulated_yaw_drift = 0.0;
 accumulated_yaw_drift_lpf = 0.0;
@@ -53,20 +53,28 @@ class CustomHTTP(BaseHTTPRequestHandler):
 		self.send_header('Content-type', 'text/html')
 		self.end_headers()
 	def do_GET(self):
-		global current_imu_fused_q, frame0_snapshot
+		global current_imu_fused_q, frame0_snapshot, current_snapshot, accumulated_yaw_drift
 		query = urlparse(self.path).query
 		query_components = dict(qc.split("=") for qc in query.split("&"))
 		req_type = query_components["type"]
-		if req_type == "imu-fused-q":
-			to_send = ''
-			for i in range(4):
-				to_send += '%f ' % current_imu_fused_q[i]
+		to_send = ''
+		
+		time.sleep(0.01)
+		if req_type == "imu-fused-mat":
+			mat = current_imu_fused_q.inverse.rotation_matrix.reshape(-1)
+			for i in range(9):
+				to_send += '%f ' % mat[i]
+		elif req_type == "acc-yaw-drift":
+			to_send += '%f' % accumulated_yaw_drift
 		elif req_type == "frame0-kp":
-			to_send = str(frame0_snapshot.kp_normed_rot)
+			for kp in frame0_snapshot.kp_normed_rot:
+				to_send += '%f ' % kp[0] + '%f ' % kp[1]
+		elif req_type == "current-kp":
+			for kp in current_snapshot.kp_normed_rot:
+				to_send += '%f ' % kp[0] + '%f ' % kp[1]
 		else:
-			to_send = ''
+			pass
 
-		print req_type
 		self._set_headers()
 
 		self.wfile.write(to_send)
@@ -74,12 +82,12 @@ class CustomHTTP(BaseHTTPRequestHandler):
 		return
 
 class ImuCamSnapshot:
-	def __init__(self, cv_kps, cv_descs, kp_points_normed, imu_fused_data):
+	def __init__(self, cv_kps, cv_descs, kp_points_normed, imu_fused_data, current_snapshot_rotated):
 		self.cv_kp = cv_kps
 		self.cv_desc = cv_descs
 		self.kp_normed = kp_points_normed
 		self.imu_fused_q = imu_fused_data
-		self.kp_normed_rot = None
+		self.kp_normed_rot = current_snapshot_rotated
 		assert len(self.cv_desc) == len(self.cv_kp)
 		assert len(self.kp_normed) == len(self.cv_kp) 
 
@@ -105,6 +113,7 @@ imu_poll_interval = imu.IMUGetPollInterval()
 sift = cv2.xfeatures2d.SIFT_create()
 
 if PLOT_KEYPOINTS:
+    import matplotlib.pyplot as plt
     plot_batch_fig, plot_batch_ax = plt.subplots(1,1)
     plt.ion()
     plt.show()
@@ -164,6 +173,7 @@ def update_plot(arr1, arr2=None, kp1=None, kp2=None):
 	plot_batch_fig.canvas.draw()
 	plt.pause(0.0001)
 
+
 def imu_loop():
 	global frame0_keypoints, current_imu_q, imu_poll_interval, accumulated_yaw_drift, current_imu_fused_q
 	while not SIGNAL_EXIT:
@@ -171,13 +181,16 @@ def imu_loop():
 		q_y_fix = pq.Quaternion(axis=[0.0, 1.0, 0.0], degrees=-accumulated_yaw_drift_lpf)
 		current_imu_fused_q = q_y_fix * current_imu_q;
 		time.sleep(imu_poll_interval*0.5/1000.0)
- 
+
+lpf_ct = 0;
 def drift_lpf_loop():
-	global accumulated_yaw_drift, accumulated_yaw_drift_lpf
+	global accumulated_yaw_drift, accumulated_yaw_drift_lpf,  lpf_ct
 	while not SIGNAL_EXIT:
-		accumulated_yaw_drift_lpf += (accumulated_yaw_drift - accumulated_yaw_drift_lpf) * 0.01;
+		accumulated_yaw_drift_lpf += (accumulated_yaw_drift - accumulated_yaw_drift_lpf) * 0.001;
 		#print 'lpf',[accumulated_yaw_drift_lpf, accumulated_yaw_drift]
 		time.sleep(0.03)
+		lpf_ct += 1
+#		print lpf_ct
 		
 
 def cam_loop():
@@ -211,25 +224,24 @@ def cam_loop():
 			undistorted_pts_arr = undistorted_pts_arr.reshape((-1,2))
 
 			# save this snapshot
-			current_snapshot = ImuCamSnapshot(kpts, descs, undistorted_pts_arr, snapshot_imu_fused_q)
+			current_snapshot_rotated = apply_rot(undistorted_pts_arr, snapshot_imu_fused_q)
+			current_snapshot = ImuCamSnapshot(kpts, descs, undistorted_pts_arr, snapshot_imu_fused_q, current_snapshot_rotated)
 			if i == 0:
-				frame0_snapshot = ImuCamSnapshot(kpts, descs, undistorted_pts_arr, snapshot_imu_fused_q)	
+				frame0_snapshot = current_snapshot;
 
 			# display the image
 			if SHOW_IMAGE:
 				kp_img = cv2.drawKeypoints(gray_sm, kpts, None)
-				kp_img = cv2.resize(kp_img, None, fx=1, fy=1, interpolation=cv2.INTER_CUBIC)
-				if i==0:
-					cv2.imwrite("image.jpg", kp_img)
-
+				kp_img = cv2.resize(kp_img, None, fx=SIFT_DOWNSAMP, fy=SIFT_DOWNSAMP, interpolation=cv2.INTER_CUBIC)
+				kp_img = np.fliplr(kp_img)
 				cv2.imshow('image.jpg', kp_img)
 				cv2.waitKey(1)
 			time.sleep(CAM_SLEEP)
 	finally:
-	    cv2.destroyAllWindows()
+		pass;
 
 def apply_rot(keypoints, imu_q):
-	keypoints_rot = np.empty(keypoints.shape, dtype=np.float32)
+	keypoints_rot = np.empty((0, 2), dtype=np.float32)
 	kp_idx = 0;
 	for kp in keypoints:
 		kp_homog = np.array([kp[0], -kp[1], 1.0], dtype= np.float32)
@@ -237,9 +249,12 @@ def apply_rot(keypoints, imu_q):
 			kp_rot = kp_homog;
 		else:
 			kp_rot = imu_q.rotate(kp_homog)
-		kp_rot = np.array([kp_rot[0] / kp_rot[2], kp_rot[1] / kp_rot[2]])
-		keypoints_rot[kp_idx,:] = kp_rot;
-		kp_idx += 1;
+
+		if (kp_rot[2] > 0.0):
+			kp_rot = np.array([kp_rot[0] / kp_rot[2], kp_rot[1] / kp_rot[2]]).reshape((1, 2))
+			keypoints_rot = np.vstack((keypoints_rot, kp_rot))
+			keypoints_rot[kp_idx,:] = kp_rot;
+			kp_idx += 1;
 	return keypoints_rot;
 
 # look at pinhole camera points and calculate difference in yaw
@@ -309,18 +324,15 @@ def main_loop():
 			len(current_snapshot.kp_normed) > 0 :
 
 			# TODO: redundant frame0
-			frame0_snapshot.kp_normed_rot = apply_rot(frame0_snapshot.kp_normed, frame0_snapshot.imu_fused_q) 
+#			frame0_snapshot.kp_normed_rot = apply_rot(frame0_snapshot.kp_normed, frame0_snapshot.imu_fused_q) 
 
 			# Get fused-rotated current imu reading
 			rot1 = pq.Quaternion(axis=[0.0, 1.0, 0.0], degrees=0.0)
 #			fake_drift = apply_rot(current_snapshot.kp_normed, rot1)
-			current_snapshot.kp_normed_rot = apply_rot(current_snapshot.kp_normed, current_snapshot.imu_fused_q)
 			#current_snapshot.kp_normed_rot = apply_rot(current_snapshot.kp_normed_rot, rot1)
 			kp_frame0, kp_current, drift_est = calculate_yaw_correction()
 			if drift_est is not None:
-
 				accumulated_yaw_drift += drift_est;
-				print 'drift_est is', accumulated_yaw_drift 
 				update_plot(frame0_snapshot.kp_normed_rot, current_snapshot.kp_normed_rot, kp1=kp_frame0, kp2=kp_current)
 		time.sleep(MAIN_LOOP_SLEEP)
 
@@ -346,9 +358,10 @@ for t in threads:
 def signal_handler(signal, frame):
 	global SIGNAL_EXIT, http_server_obj
 	SIGNAL_EXIT = True
-	http_thread.close()
+	cv2.destroyAllWindows()
 	for t in threads:
 		t.join()
+
 signal.signal(signal.SIGINT, signal_handler)
 signal.pause()
 
