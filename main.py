@@ -2,6 +2,12 @@ import threading
 import signal
 import sys
 
+# http
+from urlparse import urlparse
+from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
+import SocketServer
+import json
+
 # camera
 from picamera import PiCamera
 import time
@@ -40,6 +46,33 @@ current_imu_fused_q = None;
 frame0_snapshot = None;
 current_snapshot = None;
 
+
+class CustomHTTP(BaseHTTPRequestHandler):
+	def _set_headers(self):
+		self.send_response(200)
+		self.send_header('Content-type', 'text/html')
+		self.end_headers()
+	def do_GET(self):
+		global current_imu_fused_q, frame0_snapshot
+		query = urlparse(self.path).query
+		query_components = dict(qc.split("=") for qc in query.split("&"))
+		req_type = query_components["type"]
+		if req_type == "imu-fused-q":
+			to_send = ''
+			for i in range(4):
+				to_send += '%f ' % current_imu_fused_q[i]
+		elif req_type == "frame0-kp":
+			to_send = str(frame0_snapshot.kp_normed_rot)
+		else:
+			to_send = ''
+
+		print req_type
+		self._set_headers()
+
+		self.wfile.write(to_send)
+	def log_message(self, format, *args):
+		return
+
 class ImuCamSnapshot:
 	def __init__(self, cv_kps, cv_descs, kp_points_normed, imu_fused_data):
 		self.cv_kp = cv_kps
@@ -49,6 +82,10 @@ class ImuCamSnapshot:
 		self.kp_normed_rot = None
 		assert len(self.cv_desc) == len(self.cv_kp)
 		assert len(self.kp_normed) == len(self.cv_kp) 
+
+# start the http server
+server_address = ('', 8000)
+http_server_obj = HTTPServer(server_address, CustomHTTP)
 
 # initialize the IMU
 SETTINGS_FILE = "RTIMULib"
@@ -62,6 +99,7 @@ imu.setGyroEnable(True)
 imu.setAccelEnable(True)
 imu.setCompassEnable(False)
 imu_poll_interval = imu.IMUGetPollInterval()
+
 
 # init sift
 sift = cv2.xfeatures2d.SIFT_create()
@@ -138,7 +176,7 @@ def drift_lpf_loop():
 	global accumulated_yaw_drift, accumulated_yaw_drift_lpf
 	while not SIGNAL_EXIT:
 		accumulated_yaw_drift_lpf += (accumulated_yaw_drift - accumulated_yaw_drift_lpf) * 0.01;
-		print 'lpf',[accumulated_yaw_drift_lpf, accumulated_yaw_drift]
+		#print 'lpf',[accumulated_yaw_drift_lpf, accumulated_yaw_drift]
 		time.sleep(0.03)
 		
 
@@ -188,7 +226,6 @@ def cam_loop():
 				cv2.waitKey(1)
 			time.sleep(CAM_SLEEP)
 	finally:
-	    camera.close()
 	    cv2.destroyAllWindows()
 
 def apply_rot(keypoints, imu_q):
@@ -287,32 +324,33 @@ def main_loop():
 				update_plot(frame0_snapshot.kp_normed_rot, current_snapshot.kp_normed_rot, kp1=kp_frame0, kp2=kp_current)
 		time.sleep(MAIN_LOOP_SLEEP)
 
+def http_loop():
+	global http_server_obj
+	while not SIGNAL_EXIT:
+		http_server_obj.handle_request()
+
 # Make threads and set up ctrl-c catch
 threads = []
 cam_thread = threading.Thread(target=cam_loop)
 imu_thread = threading.Thread(target=imu_loop)
 main_thread = threading.Thread(target=main_loop)
 drift_lpf_thread = threading.Thread(target=drift_lpf_loop)
+http_thread = threading.Thread(target=http_loop)
 threads.append(cam_thread)
 threads.append(imu_thread)
 threads.append(main_thread)
 threads.append(drift_lpf_thread)
+threads.append(http_thread)
 for t in threads:
 	t.start()
 def signal_handler(signal, frame):
-	global SIGNAL_EXIT
+	global SIGNAL_EXIT, http_server_obj
 	SIGNAL_EXIT = True
+	http_thread.close()
 	for t in threads:
 		t.join()
 signal.signal(signal.SIGINT, signal_handler)
 signal.pause()
-
-
-
-
-
-
-
 
 #	print 'q angle, axis', np.around(q_corrected.axis,2), np.around(np.degrees(q_corrected.angle), 2)
 
