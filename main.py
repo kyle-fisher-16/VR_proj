@@ -27,9 +27,6 @@ import operator
 import numpy as np
 import pyquaternion as pq
 
-# plot
-
-
 # Globals
 PLOT_KEYPOINTS = False
 SHOW_IMAGE = True
@@ -47,6 +44,7 @@ frame0_snapshot = None;
 current_snapshot = None;
 
 
+# Used for HTTP connection with JAVA client
 class CustomHTTP(BaseHTTPRequestHandler):
 	def _set_headers(self):
 		self.send_response(200)
@@ -81,6 +79,7 @@ class CustomHTTP(BaseHTTPRequestHandler):
 	def log_message(self, format, *args):
 		return
 
+# Stores an image and IMU snapshot from one moment
 class ImuCamSnapshot:
 	def __init__(self, cv_kps, cv_descs, kp_points_normed, imu_fused_data, current_snapshot_rotated):
 		self.cv_kp = cv_kps
@@ -112,12 +111,14 @@ imu_poll_interval = imu.IMUGetPollInterval()
 # init sift
 sift = cv2.xfeatures2d.SIFT_create()
 
+# enable plotting
 if PLOT_KEYPOINTS:
     import matplotlib.pyplot as plt
     plot_batch_fig, plot_batch_ax = plt.subplots(1,1)
     plt.ion()
     plt.show()
 
+# init the camera with calibrated constants
 def set_up_camera(resolution=(2592, 1536), shutter=100):
 	camera = PiCamera()
 	camera.resolution = resolution
@@ -151,9 +152,11 @@ def read_imu():
 	q_corrected[3] *= -1.0; 
 	return q_corrected;
 
+# convert shutter fraction to float in microsec.
 def shutter_float(frac):
 	return int(1000000.0 / frac)
-	
+
+# update interactive plot of keypoints from the camera
 def update_plot(arr1, arr2=None, kp1=None, kp2=None):
 	if not PLOT_KEYPOINTS:
 		return;
@@ -173,7 +176,7 @@ def update_plot(arr1, arr2=None, kp1=None, kp2=None):
 	plot_batch_fig.canvas.draw()
 	plt.pause(0.0001)
 
-
+# read the imu continuously until exit
 def imu_loop():
 	global frame0_keypoints, current_imu_q, imu_poll_interval, accumulated_yaw_drift, current_imu_fused_q
 	while not SIGNAL_EXIT:
@@ -182,6 +185,7 @@ def imu_loop():
 		current_imu_fused_q = q_y_fix * current_imu_q;
 		time.sleep(imu_poll_interval*0.5/1000.0)
 
+# low-pass filter for the yaw drift
 lpf_ct = 0;
 def drift_lpf_loop():
 	global accumulated_yaw_drift, accumulated_yaw_drift_lpf,  lpf_ct
@@ -190,9 +194,8 @@ def drift_lpf_loop():
 		#print 'lpf',[accumulated_yaw_drift_lpf, accumulated_yaw_drift]
 		time.sleep(0.03)
 		lpf_ct += 1
-#		print lpf_ct
 		
-
+# repeatedly take photographs
 def cam_loop():
 	try:
 		global SIGNAL_EXIT, frame0_snapshot, current_snapshot, current_imu_fused_q
@@ -240,6 +243,7 @@ def cam_loop():
 	finally:
 		pass;
 
+# apply a rotation to a set of keypoints
 def apply_rot(keypoints, imu_q):
 	keypoints_rot = np.empty((0, 2), dtype=np.float32)
 	kp_idx = 0;
@@ -263,6 +267,7 @@ def calculate_yaw_difference(pt1, pt2):
 	pt2_angle = np.degrees(math.atan2(pt2[0,0], 1.0))
 	return pt1_angle - pt2_angle
 
+# calcuate the best estiamte of yaw correction
 def calculate_yaw_correction():
 	global frame0_snapshot, current_snapshot
 	bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
@@ -270,9 +275,6 @@ def calculate_yaw_correction():
 	matches_dist = map(lambda x:x.distance, matches)
 	matches_sorted_idx = np.argsort(matches_dist)
 	NUM_MATCHES_LIMIT = 5;
-
-#	print matches_sorted_idx[0:5]
-#	print type(matches)
 
 	try:
 		assert len(matches) >= NUM_MATCHES_LIMIT
@@ -291,8 +293,6 @@ def calculate_yaw_correction():
 			kp_dist = np.linalg.norm(kp_frame0 - kp_current)
 		
 			if kp_dist < 0.1:
-				#print 'kp_dist is', kp_dist
-				#print kp_frame0, kp_current
 				yaw_dist = calculate_yaw_difference(kp_current, kp_frame0)
 				sum_yaw_drift += yaw_dist;
 				num_yaw_measurements += 1;
@@ -303,39 +303,30 @@ def calculate_yaw_correction():
 		assert num_yaw_measurements > 0
 		drift_est = sum_yaw_drift / float(num_yaw_measurements);
 
-	#		print 'Found', len(kp_frame0_arr), 'matches'num_yaw_measurementnum_yaw_measurements
+
 		return kp_frame0_arr, kp_current_arr, drift_est 
 	except:
 		return None, None, None
 	
-#	print matches_sorted[0:5]
-#	print 'matches', len(matches)
-#	print dir(matches[0])
-#	print np.around(np.array([matches[0].distance, matches[1].distance, matches[2].distance, matches[3].distance]), 2)
-	
 
+# repeatedly update the yaw estimation
 def main_loop():
 	global SIGNAL_EXIT, frame0_snapshot, current_snapshot, accumulated_yaw_drift
-#	frame0_keypoints = np.array([[0.0, 0.0]], dtype=np.float32)
+
 	while not SIGNAL_EXIT:
 		# apply rotation to the keypoints so that they nearly line up
  		if frame0_snapshot is not None and \
 			len(frame0_snapshot.kp_normed) > 0 and \
 			len(current_snapshot.kp_normed) > 0 :
-
-			# TODO: redundant frame0
-#			frame0_snapshot.kp_normed_rot = apply_rot(frame0_snapshot.kp_normed, frame0_snapshot.imu_fused_q) 
-
 			# Get fused-rotated current imu reading
 			rot1 = pq.Quaternion(axis=[0.0, 1.0, 0.0], degrees=0.0)
-#			fake_drift = apply_rot(current_snapshot.kp_normed, rot1)
-			#current_snapshot.kp_normed_rot = apply_rot(current_snapshot.kp_normed_rot, rot1)
 			kp_frame0, kp_current, drift_est = calculate_yaw_correction()
 			if drift_est is not None:
 				accumulated_yaw_drift += drift_est;
 				update_plot(frame0_snapshot.kp_normed_rot, current_snapshot.kp_normed_rot, kp1=kp_frame0, kp2=kp_current)
 		time.sleep(MAIN_LOOP_SLEEP)
 
+# repeatedly respond to HTTP requests for data
 def http_loop():
 	global http_server_obj
 	while not SIGNAL_EXIT:
@@ -365,28 +356,3 @@ def signal_handler(signal, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.pause()
 
-#	print 'q angle, axis', np.around(q_corrected.axis,2), np.around(np.degrees(q_corrected.angle), 2)
-
-'''# write points to csv file
-with open('undistort_pts.csv', 'wb') as csvfile:
-	data_writer = csv.writer(csvfile, delimiter=',')
-	data_writer.writerows(undistorted_pts_arr)'''
-
-'''
-			assert frame0_snapshot.kp_normed_rot is not None
-			assert current_snapshot.kp_normed_rot is not None
-			assert frame0_snapshot_kp_idx < len(frame0_snapshot.kp_normed_rot)
-			assert current_snapshot_kp_idx < len(current_snapshot.kp_normed_rot)
-'''
-
-# show image	
-'''
-kp_img = cv2.drawKeypoints(gray_sm, kpts, None)
-kp_img = cv2.resize(kp_img, None, fx=1, fy=1, interpolation=cv2.INTER_CUBIC)
-if i==0:
-	cv2.imwrite("image.jpg", kp_img)
-
-cv2.imshow('image.jpg', kp_img)
-cv2.waitKey(1)
-break;
-'''
